@@ -20,7 +20,7 @@ namespace SDSharp.Onnx
             {
                 foreach (var error in validationErrors.Distinct())
                 {
-                    StaticLogger.Log($"Generate validation failed: {error}");
+                    await StaticLogger.LogAsync($"Generate validation failed: {error}");
                 }
 
                 return null;
@@ -82,7 +82,7 @@ namespace SDSharp.Onnx
                 {
                     lastException = ex;
                     this.ClearInferenceBuffers(inferenceBuffers);
-                    StaticLogger.Log(ex, attempt == 0
+                    await StaticLogger.LogAsync(ex, attempt == 0
                         ? "Error during inference. Cleared inference tensors from memory."
                         : "Error during inference after reload attempt.");
 
@@ -108,7 +108,7 @@ namespace SDSharp.Onnx
 
             if (lastException != null)
             {
-                StaticLogger.Log(lastException, "Image generation failed.");
+                await StaticLogger.LogAsync(lastException, "Image generation failed.");
             }
 
             return null;
@@ -131,7 +131,7 @@ namespace SDSharp.Onnx
             await StaticLogger.LogAsync($"Begin generation for model '{activeModel.ModelName}' size={request.Width}x{request.Height} steps={request.Steps} seed={seed}");
 
             TextEmbeddingsBuffer embeddings = await this.EncodePromptsAsync(request, inferenceBuffers, progress, ct);
-            await StaticLogger.LogAsync($"Prompts encoded. HiddenSize={embeddings.HiddenSize}");
+            await StaticLogger.LogAsync($"Prompts encoded. SequenceLength={embeddings.SequenceLength} HiddenSize={embeddings.HiddenSize}");
             float[] latents = this.CreateInitialLatents(latentWidth, latentHeight, seed, inferenceBuffers);
             await StaticLogger.LogAsync($"Initial latents created (length={latents.Length}).");
             int[] timesteps = this.Scheduler.CreateTimesteps(request.Steps);
@@ -197,28 +197,93 @@ namespace SDSharp.Onnx
         [SupportedOSPlatform("windows")]
         private async Task<TextEmbeddingsBuffer> EncodePromptsAsync(StableDiffusionGenerateRequest request, List<Array> inferenceBuffers, IProgress<double>? progress, CancellationToken ct)
         {
-            long[] negativeTokens = this.Tokenizer!.EncodeText(request.NegativePrompt);
-            long[] promptTokens = this.Tokenizer.EncodeText(request.Prompt);
+            TextEncoderEmbeddings primaryEmbeddings = await this.EncodePromptBatchAsync(this.TextEncoderSession!, this.Tokenizer!, request.Prompt, request.NegativePrompt, "TextEncoder", inferenceBuffers, ct);
+            float[] embeddings = primaryEmbeddings.Data;
+            int hiddenSize = primaryEmbeddings.HiddenSize;
+            int sequenceLength = primaryEmbeddings.SequenceLength;
+            bool shouldUseSecondaryEncoding = this.ShouldUseSecondaryTextEncoding();
+
+            if (shouldUseSecondaryEncoding)
+            {
+                InferenceSession secondarySession = this.TextEncoderSession2 ?? this.TextEncoderSession!;
+                ClipTokenizer secondaryTokenizer = this.Tokenizer2 ?? this.Tokenizer!;
+                string secondaryEncoderName = this.TextEncoderSession2 != null || this.Tokenizer2 != null
+                    ? "TextEncoder_2"
+                    : "TextEncoder_2 (fallback primary)";
+
+                TextEncoderEmbeddings secondaryEmbeddings = await this.EncodePromptBatchAsync(secondarySession, secondaryTokenizer, request.Prompt, request.NegativePrompt, secondaryEncoderName, inferenceBuffers, ct);
+                if (secondaryEmbeddings.SequenceLength != sequenceLength)
+                {
+                    throw new InvalidOperationException("TextEncoder and TextEncoder_2 returned different sequence lengths.");
+                }
+
+                embeddings = this.ConcatEmbeddingsByHiddenDimension(primaryEmbeddings, secondaryEmbeddings, inferenceBuffers);
+                hiddenSize += secondaryEmbeddings.HiddenSize;
+                await StaticLogger.LogAsync($"Combined TextEncoder embeddings. PrimaryHidden={primaryEmbeddings.HiddenSize} SecondaryHidden={secondaryEmbeddings.HiddenSize} TotalHidden={hiddenSize}");
+            }
+
+            progress?.Report(0.3);
+
+            return new TextEmbeddingsBuffer(embeddings, hiddenSize, sequenceLength);
+        }
+
+        private bool ShouldUseSecondaryTextEncoding()
+        {
+            StableDiffusionModel? model = this.LoadedModel;
+            return this.TextEncoderSession2 != null
+                || this.Tokenizer2 != null
+                || !string.IsNullOrWhiteSpace(model?.TextEncoder2ModelOnnx)
+                || !string.IsNullOrWhiteSpace(model?.Tokenizer2MergesTxt)
+                || !string.IsNullOrWhiteSpace(model?.Tokenizer2VocabJson);
+        }
+
+        [SupportedOSPlatform("windows")]
+        private async Task<TextEncoderEmbeddings> EncodePromptBatchAsync(InferenceSession session, ClipTokenizer tokenizer, string prompt, string negativePrompt, string encoderName, List<Array> inferenceBuffers, CancellationToken ct)
+        {
+            long[] negativeTokens = tokenizer.EncodeText(negativePrompt);
+            long[] promptTokens = tokenizer.EncodeText(prompt);
             inferenceBuffers.Add(negativeTokens);
             inferenceBuffers.Add(promptTokens);
 
             long[] allTokens = [.. negativeTokens, .. promptTokens];
             inferenceBuffers.Add(allTokens);
 
-            string inputName = this.FindInputName(this.TextEncoderSession!, "input_ids", "tokens");
+            string inputName = this.FindInputName(session, "input_ids", "tokens");
             var inputs = this.CreateInputList(
-                this.CreateIntegerTensorInput(inputName, this.TextEncoderSession!.InputMetadata[inputName].ElementType, allTokens, [2, this.Tokenizer.MaxLength], inferenceBuffers));
+                this.CreateIntegerTensorInput(inputName, session.InputMetadata[inputName].ElementType, allTokens, [2, tokenizer.MaxLength], inferenceBuffers));
 
-            await StaticLogger.LogAsync("Running text encoder session...");
-            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = await Task.Run(() => this.TextEncoderSession.Run(inputs), ct);
-            await StaticLogger.LogAsync("Text encoder run complete.");
+            await StaticLogger.LogAsync($"Running {encoderName} session...");
+            using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = await Task.Run(() => session.Run(inputs), ct);
+            await StaticLogger.LogAsync($"{encoderName} run complete.");
+
             float[] embeddings = this.CopyTensorToFloatArray(results.First());
             inferenceBuffers.Add(embeddings);
+            int hiddenSize = embeddings.Length / (2 * tokenizer.MaxLength);
 
-            int hiddenSize = embeddings.Length / (2 * this.Tokenizer.MaxLength);
-            progress?.Report(0.3);
+            return new TextEncoderEmbeddings(embeddings, hiddenSize, tokenizer.MaxLength);
+        }
 
-            return new TextEmbeddingsBuffer(embeddings, hiddenSize);
+        private float[] ConcatEmbeddingsByHiddenDimension(TextEncoderEmbeddings primaryEmbeddings, TextEncoderEmbeddings secondaryEmbeddings, List<Array> inferenceBuffers)
+        {
+            int batchSize = 2;
+            int combinedHiddenSize = primaryEmbeddings.HiddenSize + secondaryEmbeddings.HiddenSize;
+            var combinedEmbeddings = new float[batchSize * primaryEmbeddings.SequenceLength * combinedHiddenSize];
+            inferenceBuffers.Add(combinedEmbeddings);
+
+            for (int batchIndex = 0; batchIndex < batchSize; batchIndex++)
+            {
+                for (int tokenIndex = 0; tokenIndex < primaryEmbeddings.SequenceLength; tokenIndex++)
+                {
+                    int primarySourceIndex = ((batchIndex * primaryEmbeddings.SequenceLength) + tokenIndex) * primaryEmbeddings.HiddenSize;
+                    int secondarySourceIndex = ((batchIndex * secondaryEmbeddings.SequenceLength) + tokenIndex) * secondaryEmbeddings.HiddenSize;
+                    int destinationIndex = ((batchIndex * primaryEmbeddings.SequenceLength) + tokenIndex) * combinedHiddenSize;
+
+                    Array.Copy(primaryEmbeddings.Data, primarySourceIndex, combinedEmbeddings, destinationIndex, primaryEmbeddings.HiddenSize);
+                    Array.Copy(secondaryEmbeddings.Data, secondarySourceIndex, combinedEmbeddings, destinationIndex + primaryEmbeddings.HiddenSize, secondaryEmbeddings.HiddenSize);
+                }
+            }
+
+            return combinedEmbeddings;
         }
 
         [SupportedOSPlatform("windows")]
@@ -263,7 +328,7 @@ namespace SDSharp.Onnx
             var inputs = this.CreateInputList(
                 this.CreateFloatTensorInput(sampleInputName, this.UnetSession!.InputMetadata[sampleInputName].ElementType, latentModelInput, [2, 4, latentHeight, latentWidth], inferenceBuffers),
                 this.CreateTimestepInput(timestepInputName, this.UnetSession!.InputMetadata[timestepInputName].ElementType, timestep, inferenceBuffers),
-                this.CreateFloatTensorInput(encoderInputName, this.UnetSession!.InputMetadata[encoderInputName].ElementType, embeddings.Data, [2, this.Tokenizer!.MaxLength, embeddings.HiddenSize], inferenceBuffers));
+                this.CreateFloatTensorInput(encoderInputName, this.UnetSession!.InputMetadata[encoderInputName].ElementType, embeddings.Data, [2, embeddings.SequenceLength, embeddings.HiddenSize], inferenceBuffers));
 
             await StaticLogger.LogAsync($"Running UNet session for timestep={timestep}, sampleShape=[2,4,{latentHeight},{latentWidth}]");
             using IDisposableReadOnlyCollection<DisposableNamedOnnxValue> results = await Task.Run(() => this.UnetSession.Run(inputs), ct);
@@ -677,6 +742,7 @@ namespace SDSharp.Onnx
             });
         }
 
-        private sealed record TextEmbeddingsBuffer(float[] Data, int HiddenSize);
+        private sealed record TextEmbeddingsBuffer(float[] Data, int HiddenSize, int SequenceLength);
+        private sealed record TextEncoderEmbeddings(float[] Data, int HiddenSize, int SequenceLength);
     }
 }

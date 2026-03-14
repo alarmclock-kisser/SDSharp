@@ -9,8 +9,11 @@ namespace SDSharp.Shared
 
         public string? SchedulerConfigJson { get; set; }
         public string? TextEncoderModelOnnx { get; set; }
+        public string? TextEncoder2ModelOnnx { get; set; }
         public string? TokenizerMergesTxt { get; set; }
         public string? TokenizerVocabJson { get; set; }
+        public string? Tokenizer2MergesTxt { get; set; }
+        public string? Tokenizer2VocabJson { get; set; }
         public string? UnetModelOnnx { get; set; }
         public string? UnetWeightsPb { get; set; }
         public string? VaeDecoderModelOnnx { get; set; }
@@ -73,8 +76,11 @@ namespace SDSharp.Shared
 
             this.SchedulerConfigJson ??= this.TryGetFirstFile("scheduler", "*scheduler_config.json");
             this.TextEncoderModelOnnx ??= this.TryGetFirstFile("text_encoder", "*.onnx");
+            this.TextEncoder2ModelOnnx ??= this.TryGetFirstFile("text_encoder_2", "*.onnx");
             this.TokenizerMergesTxt ??= this.TryGetFirstFile("tokenizer", "*merges.txt");
             this.TokenizerVocabJson ??= this.TryGetFirstFile("tokenizer", "*vocab.json");
+            this.Tokenizer2MergesTxt ??= this.TryGetFirstFile("tokenizer_2", "*merges.txt");
+            this.Tokenizer2VocabJson ??= this.TryGetFirstFile("tokenizer_2", "*vocab.json");
             this.UnetModelOnnx ??= this.TryGetFirstFile("unet", "*.onnx");
             this.UnetWeightsPb ??= this.TryGetFirstFile("unet", "*.pb");
             this.VaeDecoderModelOnnx ??= this.TryGetFirstFile("vae_decoder", "*.onnx");
@@ -103,7 +109,6 @@ namespace SDSharp.Shared
             bool hasUpscaler = !string.IsNullOrWhiteSpace(upscalerDir)
                 || !string.IsNullOrWhiteSpace(this.UpscalerConfigJson)
                 || !string.IsNullOrWhiteSpace(this.UpscalerModelOnnx);
-
             if (string.IsNullOrWhiteSpace(this.ModelRootDirectory))
             {
                 errors.Add("ModelRootDirectory is required.");
@@ -122,6 +127,10 @@ namespace SDSharp.Shared
             ValidateRequiredFile(errors, this.TextEncoderModelOnnx, nameof(this.TextEncoderModelOnnx));
             ValidateRequiredFile(errors, this.TokenizerMergesTxt, nameof(this.TokenizerMergesTxt));
             ValidateRequiredFile(errors, this.TokenizerVocabJson, nameof(this.TokenizerVocabJson));
+            ValidateOptionalFile(errors, this.TextEncoder2ModelOnnx, nameof(this.TextEncoder2ModelOnnx));
+            ValidateOptionalFile(errors, this.Tokenizer2MergesTxt, nameof(this.Tokenizer2MergesTxt));
+            ValidateOptionalFile(errors, this.Tokenizer2VocabJson, nameof(this.Tokenizer2VocabJson));
+
             ValidateRequiredFile(errors, this.UnetModelOnnx, nameof(this.UnetModelOnnx));
             ValidateRequiredFile(errors, this.VaeDecoderModelOnnx, nameof(this.VaeDecoderModelOnnx));
             ValidateOptionalFile(errors, this.UnetWeightsPb, nameof(this.UnetWeightsPb));
@@ -143,6 +152,19 @@ namespace SDSharp.Shared
                 catch (Exception ex)
                 {
                     errors.Add($"SchedulerConfigJson '{this.SchedulerConfigJson}' is not valid JSON: {ex.Message}");
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(this.Tokenizer2VocabJson) && File.Exists(this.Tokenizer2VocabJson))
+            {
+                try
+                {
+                    using var vocab2Document = JsonDocument.Parse(File.ReadAllText(this.Tokenizer2VocabJson));
+                    _ = vocab2Document.RootElement.ValueKind;
+                }
+                catch (Exception ex)
+                {
+                    errors.Add($"Tokenizer2VocabJson '{this.Tokenizer2VocabJson}' is not valid JSON: {ex.Message}");
                 }
             }
 

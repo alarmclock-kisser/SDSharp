@@ -75,7 +75,7 @@ namespace SDSharp.Api.Controllers
             }
             catch (Exception ex)
             {
-                StaticLogger.Log(ex, "Error in LoadModelAsync");
+                await StaticLogger.LogAsync(ex, "Error in LoadModelAsync");
                 return StatusCode(500, "An error occurred while loading the model.");
             }
         }
@@ -94,7 +94,7 @@ namespace SDSharp.Api.Controllers
             }
             catch (Exception ex)
             {
-                StaticLogger.Log(ex, "Error in UnloadModelAsync");
+                await StaticLogger.LogAsync(ex, "Error in UnloadModelAsync");
                 return StatusCode(500, "An error occurred while unloading the model.");
             }
         }
@@ -125,14 +125,13 @@ namespace SDSharp.Api.Controllers
             }
             catch (Exception ex)
             {
-                StaticLogger.Log(ex, "Error in GenerateAsync");
+                await StaticLogger.LogAsync(ex, "Error in GenerateAsync");
                 return StatusCode(500, "An error occurred while generating the image.");
             }
         }
 
         [SupportedOSPlatform("windows")]
         [HttpPost("generate/file")]
-        [Produces("image/png")]
         public async Task<IActionResult> GenerateFileAsync([FromBody] StableDiffusionGenerateRequest request, CancellationToken ct)
         {
             try
@@ -157,7 +156,7 @@ namespace SDSharp.Api.Controllers
             }
             catch (Exception ex)
             {
-                StaticLogger.Log(ex, "Error in GenerateFileAsync");
+                await StaticLogger.LogAsync(ex, "Error in GenerateFileAsync");
                 return StatusCode(500, "An error occurred while generating the image file.");
             }
         }

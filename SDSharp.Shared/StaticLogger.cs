@@ -10,6 +10,8 @@ namespace SDSharp.Shared
 {
     public static class StaticLogger
     {
+        private static readonly object LogFileSync = new();
+
         public static readonly ConcurrentDictionary<DateTime, string> LogEntries = new();
         public static readonly BindingList<string> LogEntriesBindingList = [];
         public static readonly BindingList<string> NativeRuntimeLogEntriesBindingList = [];
@@ -122,7 +124,10 @@ namespace SDSharp.Shared
             {
                 try
                 {
-                    File.AppendAllText(LogFilePath, logEntry + Environment.NewLine);
+                    lock (LogFileSync)
+                    {
+                        File.AppendAllText(LogFilePath, logEntry + Environment.NewLine);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -145,12 +150,14 @@ namespace SDSharp.Shared
 
         public static async Task LogAsync(string message, bool configureAwait = false)
         {
-            await Task.Run(() => Log(message)).ConfigureAwait(configureAwait);
+            Log(message);
+            await Task.CompletedTask.ConfigureAwait(configureAwait);
         }
 
         public static async Task LogAsync(Exception ex, string? preText = null, bool configureAwait = false)
         {
-            await Task.Run(() => Log(ex, preText)).ConfigureAwait(configureAwait);
+            Log(ex, preText);
+            await Task.CompletedTask.ConfigureAwait(configureAwait);
         }
 
 

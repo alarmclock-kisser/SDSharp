@@ -10,6 +10,7 @@ namespace SDSharp.Onnx
         public StableDiffusionLoadOptions? LoadedModelOptions { get; private set; } = null;
 
         private InferenceSession? TextEncoderSession;
+        private InferenceSession? TextEncoderSession2;
         private InferenceSession? UnetSession;
         private InferenceSession? VaeDecoderSession;
         private InferenceSession? VaeEncoderSession;
@@ -18,8 +19,11 @@ namespace SDSharp.Onnx
         private JsonDocument? UpscalerConfigDocument;
         private StableDiffusionScheduler? Scheduler;
         private ClipTokenizer? Tokenizer;
+        private ClipTokenizer? Tokenizer2;
         private string? TokenizerMergesContent;
         private string? TokenizerVocabContent;
+        private string? Tokenizer2MergesContent;
+        private string? Tokenizer2VocabContent;
 
 
 
@@ -69,7 +73,7 @@ namespace SDSharp.Onnx
             {
                 foreach (var error in validationErrors.Distinct())
                 {
-                    StaticLogger.Log($"Load validation failed: {error}");
+                    await StaticLogger.LogAsync($"Load validation failed: {error}");
                 }
 
                 return null;
@@ -107,7 +111,7 @@ namespace SDSharp.Onnx
             }
             catch (Exception ex) when (string.Equals(resolvedOptions.OrtExecutionProvider, "Dml", StringComparison.OrdinalIgnoreCase))
             {
-                StaticLogger.Log(ex, $"Error loading model '{model.ModelName}' with DML. Falling back to CPU.");
+                await StaticLogger.LogAsync(ex, $"Error loading model '{model.ModelName}' with DML. Falling back to CPU.");
                 this.DisposeModelResources();
 
                 resolvedOptions.OrtExecutionProvider = "Cpu";
@@ -147,11 +151,37 @@ namespace SDSharp.Onnx
             this.Tokenizer = new ClipTokenizer(this.TokenizerVocabContent, this.TokenizerMergesContent);
             await StaticLogger.LogAsync("Tokenizer created.");
 
+            if (!string.IsNullOrWhiteSpace(model.Tokenizer2MergesTxt) && !string.IsNullOrWhiteSpace(model.Tokenizer2VocabJson))
+            {
+                this.Tokenizer2MergesContent = await File.ReadAllTextAsync(model.Tokenizer2MergesTxt!, ct);
+                await StaticLogger.LogAsync($"Tokenizer_2 merges loaded from '{model.Tokenizer2MergesTxt}'.");
+                this.Tokenizer2VocabContent = await File.ReadAllTextAsync(model.Tokenizer2VocabJson!, ct);
+                await StaticLogger.LogAsync($"Tokenizer_2 vocab loaded from '{model.Tokenizer2VocabJson}'.");
+                this.Tokenizer2 = new ClipTokenizer(this.Tokenizer2VocabContent, this.Tokenizer2MergesContent);
+                await StaticLogger.LogAsync("Tokenizer_2 created.");
+            }
+            else
+            {
+                await StaticLogger.LogAsync("Tokenizer_2 not fully available. Secondary text encoding will fall back to the primary tokenizer.");
+            }
+
             progress?.Report(0.2);
 
             await StaticLogger.LogAsync($"Creating TextEncoder session from '{model.TextEncoderModelOnnx}'...");
             this.TextEncoderSession = await this.CreateInferenceSessionAsync(model.TextEncoderModelOnnx!, options, ct);
             await StaticLogger.LogAsync("TextEncoder session created.");
+
+            if (!string.IsNullOrWhiteSpace(model.TextEncoder2ModelOnnx))
+            {
+                await StaticLogger.LogAsync($"Creating TextEncoder_2 session from '{model.TextEncoder2ModelOnnx}'...");
+                this.TextEncoderSession2 = await this.CreateInferenceSessionAsync(model.TextEncoder2ModelOnnx!, options, ct);
+                await StaticLogger.LogAsync("TextEncoder_2 session created.");
+            }
+            else
+            {
+                await StaticLogger.LogAsync("TextEncoder_2 not available. Secondary text encoding will fall back to the primary text encoder.");
+            }
+
             progress?.Report(0.45);
 
             await StaticLogger.LogAsync($"Creating Unet session from '{model.UnetModelOnnx}'...");
@@ -291,7 +321,7 @@ namespace SDSharp.Onnx
             }
             catch (Exception ex)
             {
-                StaticLogger.Log(ex, $"Error unloading model '{modelName}'.");
+                await StaticLogger.LogAsync(ex, $"Error unloading model '{modelName}'.");
                 return this.LoadedModel == null ? true : false;
             }
         }
@@ -302,6 +332,9 @@ namespace SDSharp.Onnx
         {
             this.TextEncoderSession?.Dispose();
             this.TextEncoderSession = null;
+
+            this.TextEncoderSession2?.Dispose();
+            this.TextEncoderSession2 = null;
 
             this.UnetSession?.Dispose();
             this.UnetSession = null;
@@ -323,9 +356,12 @@ namespace SDSharp.Onnx
 
             this.Scheduler = null;
             this.Tokenizer = null;
+            this.Tokenizer2 = null;
 
             this.TokenizerMergesContent = null;
             this.TokenizerVocabContent = null;
+            this.Tokenizer2MergesContent = null;
+            this.Tokenizer2VocabContent = null;
         }
 
 
