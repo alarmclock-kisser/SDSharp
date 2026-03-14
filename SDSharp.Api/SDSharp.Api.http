@@ -1,0 +1,6 @@
+@SDSharp.Api_HostAddress = http://localhost:5079
+
+GET {{SDSharp.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

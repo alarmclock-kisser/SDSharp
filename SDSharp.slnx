@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="SDSharp.Api/SDSharp.Api.csproj" />
+  <Project Path="SDSharp.Media/SDSharp.Media.csproj" />
+  <Project Path="SDSharp.Onnx/SDSharp.Onnx.csproj" />
+  <Project Path="SDSharp.Shared/SDSharp.Shared.csproj" />
+</Solution>
